@@ -1,16 +1,43 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:pickr/main.dart';
+import 'package:pickr/persistence/favorite_store.dart';
 import 'package:pickr/persistence/pick_store.dart';
+import 'package:pickr/theme/app_theme.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
-  Future<void> openSheet(WidgetTester tester, {PickStore? store}) async {
+  Future<void> openSheet(
+    WidgetTester tester, {
+    PickStore? store,
+    FavoriteStore? favorites,
+  }) async {
     tester.view.physicalSize = const Size(390, 844);
     tester.view.devicePixelRatio = 1;
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
-    await tester.pumpWidget(PickrApp(store: store ?? MemoryPickStore()));
+    await tester.pumpWidget(
+      PickrApp(
+        store: store ?? MemoryPickStore(),
+        favorites: favorites ?? MemoryFavoriteStore(),
+      ),
+    );
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> dismissSnackBar(WidgetTester tester) async {
+    final scaffold = find.byType(Scaffold);
+    if (scaffold.evaluate().isEmpty) return;
+    ScaffoldMessenger.of(tester.element(scaffold.first)).hideCurrentSnackBar();
+    await tester.pumpAndSettle();
+  }
+
+  Future<void> tapTeam(WidgetTester tester, String code) async {
+    await dismissSnackBar(tester);
+    final finder = find.byKey(Key('team-$code'));
+    await tester.scrollUntilVisible(finder, 400);
+    final rect = tester.getRect(finder);
+    await tester.tapAt(Offset(rect.left + 16, rect.center.dy));
     await tester.pumpAndSettle();
   }
 
@@ -21,6 +48,16 @@ void main() {
     await tester.ensureVisible(item);
     await tester.tap(item);
     await tester.pumpAndSettle();
+  }
+
+  bool teamIsSelected(WidgetTester tester, String code) {
+    final materials = tester.widgetList<Material>(
+      find.ancestor(
+        of: find.byKey(Key('team-$code')),
+        matching: find.byType(Material),
+      ),
+    );
+    return materials.any((material) => material.color == AppColors.accent);
   }
 
   Future<void> swipe(
@@ -39,6 +76,7 @@ void main() {
   ) async {
     await openSheet(tester);
 
+    expect(find.text('Clear'), findsNothing);
     expect(find.byKey(const Key('sheet')), findsOneWidget);
     expect(
       tester.widget<Text>(find.byKey(const Key('week-title'))).data,
@@ -55,9 +93,17 @@ void main() {
     await tester.tap(find.byKey(const Key('next-week')));
     await tester.pumpAndSettle();
     expect(
-      find.text('Pick a team for Week 1 before moving on.'),
-      findsOneWidget,
+      tester.widget<Text>(find.byKey(const Key('week-title'))).data,
+      'Week 2',
     );
+    expect(find.text("You haven't picked for Week 1 yet."), findsOneWidget);
+
+    await tapTeam(tester, 'ARI');
+    expect(teamIsSelected(tester, 'ARI'), isFalse);
+    expect(find.text("You haven't picked for Week 1 yet."), findsNWidgets(2));
+
+    await tester.tap(find.byKey(const Key('prev-week')));
+    await tester.pumpAndSettle();
     expect(
       tester.widget<Text>(find.byKey(const Key('week-title'))).data,
       'Week 1',
@@ -70,7 +116,7 @@ void main() {
     );
     expect(
       tester.widget<Text>(find.byKey(const Key('week-title'))).data,
-      'Week 1',
+      'Week 2',
     );
 
     await jumpTo(tester, 5);
@@ -87,12 +133,14 @@ void main() {
       findsOneWidget,
     );
 
-    final seahawks = find.byKey(const Key('team-SEA'));
-    await tester.scrollUntilVisible(seahawks, 400);
-    await tester.tap(seahawks);
-    await tester.pumpAndSettle();
+    await tapTeam(tester, 'SEA');
     expect(find.byIcon(Icons.check), findsNothing);
     expect(find.byIcon(Icons.close), findsNothing);
+    expect(teamIsSelected(tester, 'SEA'), isFalse);
+    expect(
+      find.text("You haven't picked for Week 1, Week 2, Week 3, Week 4 yet."),
+      findsOneWidget,
+    );
   });
 
   testWidgets('the week menu jumps ahead without a pick', (tester) async {
@@ -102,15 +150,15 @@ void main() {
       tester.widget<Text>(find.byKey(const Key('week-title'))).data,
       'Week 12',
     );
-    expect(
-      find.text(
-        "Matchups and spreads for Week 12 aren't posted yet. "
-        "You can look ahead, but there's nothing to pick.",
-      ),
-      findsOneWidget,
-    );
-    expect(find.byType(InkWell), findsWidgets);
-    expect(find.byKey(const Key('team-SEA')), findsNothing);
+    expect(find.byKey(const Key('matchup-list')), findsOneWidget);
+    final missing = [
+      for (var week = 1; week < 12; week++) 'Week $week',
+    ].join(', ');
+    expect(find.text("You haven't picked for $missing yet."), findsOneWidget);
+
+    await tapTeam(tester, 'SEA');
+    expect(teamIsSelected(tester, 'SEA'), isFalse);
+    expect(find.text("You haven't picked for $missing yet."), findsNWidgets(2));
   });
 
   testWidgets('a loss still lets the next week open, and a win shows a check', (
@@ -118,8 +166,8 @@ void main() {
   ) async {
     await openSheet(tester);
 
-    await tester.tap(find.byKey(const Key('team-NE')));
-    await tester.pumpAndSettle();
+    await tapTeam(tester, 'NE');
+    expect(find.text('Enter the team you picked for Week 1'), findsNothing);
     expect(
       find.descendant(
         of: find.byKey(const Key('team-NE')),
@@ -135,10 +183,8 @@ void main() {
       'Week 2',
     );
 
-    // Week 2 has no pick, so the arrow will not leave it. The menu can.
     await jumpTo(tester, 1);
-    await tester.tap(find.byKey(const Key('team-SEA')));
-    await tester.pumpAndSettle();
+    await tapTeam(tester, 'SEA');
     expect(
       find.descendant(
         of: find.byKey(const Key('team-SEA')),
@@ -151,7 +197,7 @@ void main() {
     await swipe(
       tester,
       const Offset(-220, 0),
-      from: find.byKey(const Key('week-instruction')),
+      from: find.byKey(const Key('still-open')),
     );
     expect(
       tester.widget<Text>(find.byKey(const Key('week-title'))).data,
@@ -163,8 +209,7 @@ void main() {
     tester,
   ) async {
     await openSheet(tester);
-    await tester.tap(find.byKey(const Key('team-SEA')));
-    await tester.pumpAndSettle();
+    await tapTeam(tester, 'SEA');
 
     await swipe(
       tester,
@@ -207,14 +252,11 @@ void main() {
     );
     expect(find.text(usedFooter), findsOneWidget);
 
-    await tester.tap(find.byKey(const Key('team-SEA')));
-    await tester.pumpAndSettle();
+    await tapTeam(tester, 'SEA');
     expect(find.byIcon(Icons.check), findsNothing);
     expect(find.byIcon(Icons.close), findsNothing);
 
-    await tester.ensureVisible(find.byKey(const Key('team-ARI')));
-    await tester.tap(find.byKey(const Key('team-ARI')));
-    await tester.pumpAndSettle();
+    await tapTeam(tester, 'ARI');
     expect(
       find.descendant(
         of: find.byKey(const Key('team-ARI')),
@@ -233,21 +275,80 @@ void main() {
     expect(find.byKey(const Key('game-ATL-GB')), findsNothing);
     expect(find.byKey(const Key('team-ATL')), findsNothing);
     expect(find.byKey(const Key('team-GB')), findsNothing);
+    await tester.scrollUntilVisible(find.byKey(const Key('game-LAC-BUF')), 400);
     expect(find.byKey(const Key('game-LAC-BUF')), findsOneWidget);
     expect(find.text(usedFooter), findsOneWidget);
   });
 
-  testWidgets('week 6 is not posted and cannot be picked', (tester) async {
+  testWidgets('future weeks show matchups before earlier picks are in', (
+    tester,
+  ) async {
     await openSheet(tester);
-    await jumpTo(tester, 6);
+    await jumpTo(tester, 5);
+    await tester.tap(find.byKey(const Key('next-week')));
+    await tester.pumpAndSettle();
+
     expect(
-      find.text(
-        "Matchups and spreads for Week 6 aren't posted yet. "
-        "You can look ahead, but there's nothing to pick.",
-      ),
+      tester.widget<Text>(find.byKey(const Key('week-title'))).data,
+      'Week 6',
+    );
+    final missing = [
+      for (var week = 1; week < 6; week++) 'Week $week',
+    ].join(', ');
+    expect(find.text("You haven't picked for $missing yet."), findsOneWidget);
+    expect(find.byKey(const Key('matchup-list')), findsOneWidget);
+    expect(find.text('+10.5'), findsOneWidget);
+    final london = find.byKey(const Key('game-HOU-JAX'));
+    await tester.scrollUntilVisible(london, 400);
+    expect(
+      find.descendant(of: london, matching: find.text('London')),
       findsOneWidget,
     );
-    expect(find.byKey(const Key('matchup-list')), findsNothing);
+    final seattle = find.byKey(const Key('game-SEA-DEN'));
+    await tester.scrollUntilVisible(seattle, 400);
+    expect(
+      find.descendant(of: seattle, matching: find.text('-1.5')),
+      findsOneWidget,
+    );
+
+    await tapTeam(tester, 'SEA');
+    expect(teamIsSelected(tester, 'SEA'), isFalse);
+    expect(find.text("You haven't picked for $missing yet."), findsNWidgets(2));
+
+    await jumpTo(tester, 7);
+    final week7Missing = [
+      for (var week = 1; week < 7; week++) 'Week $week',
+    ].join(', ');
+    expect(
+      find.text("You haven't picked for $week7Missing yet."),
+      findsOneWidget,
+    );
+    expect(find.text('—'), findsNothing);
+    expect(find.text('at'), findsWidgets);
+    await tester.scrollUntilVisible(find.text('France'), 400);
+    expect(find.text('France'), findsOneWidget);
+  });
+
+  testWidgets('a caught-up sheet can look ahead but still cannot pick', (
+    tester,
+  ) async {
+    await openSheet(
+      tester,
+      store: MemoryPickStore({1: 'NE', 2: 'GB', 3: 'KC', 4: 'DAL', 5: 'PHI'}),
+    );
+    await jumpTo(tester, 6);
+    expect(find.byKey(const Key('still-open')), findsNothing);
+    expect(
+      find.text('Week 6 — look only, not open for picks.'),
+      findsOneWidget,
+    );
+
+    await tapTeam(tester, 'SEA');
+    expect(teamIsSelected(tester, 'SEA'), isFalse);
+    expect(
+      find.text('Week 6 — look only, not open for picks.'),
+      findsNWidgets(2),
+    );
   });
 
   testWidgets('week 5 shows week 4 records, results, and the away spread', (
@@ -256,6 +357,7 @@ void main() {
     await openSheet(tester);
     await jumpTo(tester, 5);
 
+    await tester.scrollUntilVisible(find.text('London'), 400);
     expect(find.text('London'), findsOneWidget);
 
     final card = find.byKey(const Key('game-SF-SEA'));
@@ -273,7 +375,10 @@ void main() {
       find.descendant(of: card, matching: find.textContaining('49ers (4-0)')),
       findsOneWidget,
     );
-    expect(find.descendant(of: card, matching: find.text('3')), findsOneWidget);
+    expect(
+      find.descendant(of: card, matching: find.text('+3')),
+      findsOneWidget,
+    );
     expect(find.descendant(of: card, matching: find.text('at')), findsWidgets);
     expect(find.text('W 30-23 at home'), findsOneWidget);
     expect(find.text('L 31-33 at Commanders'), findsOneWidget);
@@ -295,12 +400,66 @@ void main() {
     }
   });
 
-  testWidgets('picks survive a restart and clear wipes them', (tester) async {
+  testWidgets('a favorite sorts above the spread and stays filled', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    await openSheet(
+      tester,
+      store: SharedPreferencesPickStore(),
+      favorites: SharedPreferencesFavoriteStore(),
+    );
+
+    final jetsStar = find.byKey(const Key('favorite-NYJ'));
+    await tester.scrollUntilVisible(jetsStar, 400);
+    await tester.tap(jetsStar);
+    await tester.pumpAndSettle();
+    expect(teamIsSelected(tester, 'NYJ'), isFalse);
+    expect(
+      find.descendant(of: jetsStar, matching: find.byIcon(Icons.star)),
+      findsOneWidget,
+    );
+    expect(
+      tester.getTopLeft(find.byKey(const Key('game-NYJ-TEN'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const Key('game-ARI-LAC'))).dy),
+    );
+
+    await tapTeam(tester, 'NE');
+    expect(
+      tester.getTopLeft(find.byKey(const Key('game-NE-SEA'))).dy,
+      lessThan(tester.getTopLeft(find.byKey(const Key('game-NYJ-TEN'))).dy),
+    );
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    await tester.pumpAndSettle();
+    await openSheet(
+      tester,
+      store: SharedPreferencesPickStore(),
+      favorites: SharedPreferencesFavoriteStore(),
+    );
+    final starred = find.byKey(const Key('favorite-NYJ'));
+    await tester.scrollUntilVisible(starred, 400);
+    expect(
+      find.descendant(of: starred, matching: find.byIcon(Icons.star)),
+      findsOneWidget,
+    );
+
+    await tester.tap(starred);
+    await tester.pumpAndSettle();
+    final hollow = find.byKey(const Key('favorite-NYJ'));
+    await tester.scrollUntilVisible(hollow, 400);
+    expect(
+      find.descendant(of: hollow, matching: find.byIcon(Icons.star_border)),
+      findsOneWidget,
+    );
+  });
+
+  testWidgets('tapping a selected team clears only that week', (tester) async {
     SharedPreferences.setMockInitialValues({});
     await openSheet(tester, store: SharedPreferencesPickStore());
 
-    await tester.tap(find.byKey(const Key('team-SEA')));
-    await tester.pumpAndSettle();
+    await tapTeam(tester, 'SEA');
+    expect(find.text('Enter the team you picked for Week 1'), findsNothing);
     expect(find.byIcon(Icons.check), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());
@@ -314,24 +473,49 @@ void main() {
       findsOneWidget,
     );
 
-    await tester.tap(find.byKey(const Key('clear-picks')));
+    await tester.tap(find.byKey(const Key('next-week')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const Key('confirm-clear')));
+    final arizona = find.byKey(const Key('team-ARI'));
+    await tester.scrollUntilVisible(arizona, 400);
+    await tester.tap(arizona);
     await tester.pumpAndSettle();
-
-    expect(find.byIcon(Icons.check), findsNothing);
     expect(
-      tester.widget<Text>(find.byKey(const Key('week-title'))).data,
-      'Week 1',
+      find.descendant(
+        of: find.byKey(const Key('team-ARI')),
+        matching: find.byIcon(Icons.close),
+      ),
+      findsOneWidget,
+    );
+
+    await jumpTo(tester, 1);
+    await tapTeam(tester, 'SEA');
+    expect(find.byIcon(Icons.check), findsNothing);
+    expect(teamIsSelected(tester, 'SEA'), isFalse);
+
+    await jumpTo(tester, 2);
+    await tester.scrollUntilVisible(find.byKey(const Key('team-ARI')), 400);
+    expect(
+      find.descendant(
+        of: find.byKey(const Key('team-ARI')),
+        matching: find.byIcon(Icons.close),
+      ),
+      findsOneWidget,
     );
 
     await tester.pumpWidget(const SizedBox.shrink());
     await tester.pumpAndSettle();
     await openSheet(tester, store: SharedPreferencesPickStore());
     expect(find.byIcon(Icons.check), findsNothing);
+    expect(teamIsSelected(tester, 'SEA'), isFalse);
+
+    await jumpTo(tester, 2);
+    await tester.scrollUntilVisible(find.byKey(const Key('team-ARI')), 400);
     expect(
-      tester.widget<Text>(find.byKey(const Key('week-title'))).data,
-      'Week 1',
+      find.descendant(
+        of: find.byKey(const Key('team-ARI')),
+        matching: find.byIcon(Icons.close),
+      ),
+      findsOneWidget,
     );
   });
 }

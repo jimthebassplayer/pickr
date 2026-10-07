@@ -13,6 +13,7 @@ class AppColors {
   static const onAccent = Color(0xFF1A2208);
   static const win = Color(0xFF1F7A45);
   static const loss = Color(0xFF9D341F);
+  static const star = Color(0xFFF5C518);
 }
 
 const String kDisplayFont = 'BarlowCondensed';

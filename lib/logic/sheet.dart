@@ -127,15 +127,19 @@ List<int> weeksStillOpen(Map<int, String> picks) {
 
 bool isCaughtUp(Map<int, String> picks) => weeksStillOpen(picks).isEmpty;
 
+/// Weeks before [week] that still have no pick.
+List<int> weeksMissingBefore(int week, Map<int, String> picks) {
+  return [
+    for (var earlier = 1; earlier < week; earlier++)
+      if (!picks.containsKey(earlier)) earlier,
+  ];
+}
+
+/// Past and current weeks open only after every earlier week has a pick.
+/// Future weeks stay look-only.
 bool weekAcceptsPicks(int week, Map<int, String> picks) {
-  switch (weekPhase(week)) {
-    case WeekPhase.past:
-      return true;
-    case WeekPhase.current:
-      return isCaughtUp(picks);
-    case WeekPhase.future:
-      return false;
-  }
+  if (weekPhase(week) == WeekPhase.future) return false;
+  return weeksMissingBefore(week, picks).isEmpty;
 }
 
 /// A final game in the open week stays locked. Past finals stay editable.
@@ -152,8 +156,33 @@ bool canPickTeam(Game game, String code, Map<int, String> picks) {
   return true;
 }
 
+/// Only a closed current week, or a final game in the open week, is dimmed.
+/// Earlier and future weeks stay readable so the slate can be looked through.
 bool cardIsDimmed(Game game, Map<int, String> picks) {
+  if (weekPhase(game.week) != WeekPhase.current) return false;
   return !gameAcceptsPicks(game, picks);
+}
+
+/// Why a tap on [week] cannot be saved, or null when the week is open.
+String? selectBlockedMessage(int week, Map<int, String> picks) {
+  final missing = weeksMissingBefore(week, picks);
+  if (missing.isNotEmpty) {
+    final list = missing.map((openWeek) => 'Week $openWeek').join(', ');
+    return "You haven't picked for $list yet.";
+  }
+  if (weekPhase(week) == WeekPhase.future) {
+    return 'Week $week — look only, not open for picks.';
+  }
+  return null;
+}
+
+/// An existing pick can be cleared on a past or current week, even if an
+/// earlier week was cleared later. A final game in the open week stays locked.
+bool canClearPick(Game game, String code, Map<int, String> picks) {
+  if (picks[game.week] != code) return false;
+  if (weekPhase(game.week) == WeekPhase.future) return false;
+  if (weekPhase(game.week) == WeekPhase.current && game.isFinal) return false;
+  return true;
 }
 
 /// Picking [team] in [week] replaces that week and drops any later pick of the
@@ -169,26 +198,71 @@ Map<int, String> picksAfterSelecting({
   return next;
 }
 
-/// Swipe and the arrows cannot leave a past week that has no pick.
-/// The week menu can.
-bool swipeCanLeave(int week, Map<int, String> picks) {
-  return weekPhase(week) != WeekPhase.past || picks.containsKey(week);
+/// Drop just this week's pick. Later picks stay.
+Map<int, String> picksAfterClearingWeek(Map<int, String> picks, int week) {
+  final next = Map<int, String>.from(picks);
+  next.remove(week);
+  return next;
 }
 
-String blockedLeaveMessage(int week) {
-  return 'Pick a team for Week $week before moving on.';
+/// Selected game, then games with a favorite, then the biggest absolute
+/// spread. Games without a line fall back to the away nickname.
+List<Game> orderedGames(
+  List<Game> games, {
+  required String? pick,
+  required Set<String> favorites,
+}) {
+  final sorted = [...games];
+  sorted.sort((a, b) {
+    final byRank = _orderRank(
+      a,
+      pick,
+      favorites,
+    ).compareTo(_orderRank(b, pick, favorites));
+    if (byRank != 0) return byRank;
+    return _compareSpreadThenAway(a, b);
+  });
+  return sorted;
+}
+
+int _orderRank(Game game, String? pick, Set<String> favorites) {
+  if (pick != null && (game.away == pick || game.home == pick)) return 0;
+  if (favorites.contains(game.away) || favorites.contains(game.home)) {
+    return 1;
+  }
+  return 2;
+}
+
+int _compareSpreadThenAway(Game a, Game b) {
+  final aSpread = a.spread;
+  final bSpread = b.spread;
+  if (aSpread != null && bSpread != null) {
+    final bySpread = bSpread.abs().compareTo(aSpread.abs());
+    if (bySpread != 0) return bySpread;
+  } else if (aSpread != null) {
+    return -1;
+  } else if (bSpread != null) {
+    return 1;
+  }
+  return nicknameOf(a.away).compareTo(nicknameOf(b.away));
 }
 
 String weekInstruction(int week, Map<int, String> picks) {
   switch (weekPhase(week)) {
     case WeekPhase.past:
+      if (picks.containsKey(week)) return '';
+      final blocked = selectBlockedMessage(week, picks);
+      if (blocked != null) return blocked;
       return 'Enter the team you picked for Week $week';
     case WeekPhase.current:
       if (isCaughtUp(picks)) return '';
       final through = currentWeek - 1;
       return 'Week $currentWeek stays closed until Weeks 1–$through are filled in.';
     case WeekPhase.future:
-      return futureWeekInstruction(week, posted: gamesForWeek(week).isNotEmpty);
+      if (gamesForWeek(week).isEmpty) {
+        return futureWeekInstruction(week, posted: false);
+      }
+      return selectBlockedMessage(week, picks)!;
   }
 }
 
@@ -222,12 +296,14 @@ bool everyRemainingGameHidden(int week, Map<int, String> picks) {
   return games.isNotEmpty && visibleGames(week, picks).isEmpty;
 }
 
-/// Null spread is a dash. Zero is PK. Whole numbers drop the decimal.
+/// No line is blank. Zero is PK. Every other number keeps its sign.
 String formatSpread(double? spread) {
-  if (spread == null) return '—';
+  if (spread == null) return '';
   if (spread == 0) return 'PK';
-  if (spread == spread.roundToDouble()) return spread.toInt().toString();
-  return spread.toString();
+  final digits = spread == spread.roundToDouble()
+      ? spread.abs().toInt().toString()
+      : spread.abs().toString();
+  return spread > 0 ? '+$digits' : '-$digits';
 }
 
 String? cardStatus(Game game) {

@@ -2,14 +2,16 @@ import 'package:flutter/material.dart';
 
 import '../data/season.dart';
 import '../logic/sheet.dart';
+import '../persistence/favorite_store.dart';
 import '../persistence/pick_store.dart';
 import '../theme/app_theme.dart';
 import '../widgets/matchup_card.dart';
 
 class SheetScreen extends StatefulWidget {
-  const SheetScreen({super.key, required this.store});
+  const SheetScreen({super.key, required this.store, required this.favorites});
 
   final PickStore store;
+  final FavoriteStore favorites;
 
   @override
   State<SheetScreen> createState() => _SheetScreenState();
@@ -21,6 +23,7 @@ class _SheetScreenState extends State<SheetScreen> {
   final Set<int> _controlPointers = {};
 
   Map<int, String> _picks = {};
+  Set<String> _favorites = {};
   int _week = 1;
   bool _ready = false;
 
@@ -32,9 +35,11 @@ class _SheetScreenState extends State<SheetScreen> {
 
   Future<void> _load() async {
     final picks = await widget.store.load();
+    final favorites = await widget.favorites.load();
     if (!mounted) return;
     setState(() {
       _picks = picks;
+      _favorites = favorites;
       _ready = true;
     });
   }
@@ -58,9 +63,9 @@ class _SheetScreenState extends State<SheetScreen> {
     final delta = event.position - origin;
     if (delta.dx.abs() < 72 || delta.dx.abs() < delta.dy.abs() * 1.5) return;
     if (delta.dx < 0) {
-      _goTo(_week + 1, bySwipe: true);
+      _goTo(_week + 1);
     } else {
-      _goTo(_week - 1, bySwipe: true);
+      _goTo(_week - 1);
     }
   }
 
@@ -69,20 +74,21 @@ class _SheetScreenState extends State<SheetScreen> {
     _controlPointers.remove(event.pointer);
   }
 
-  void _goTo(int week, {required bool bySwipe}) {
+  void _goTo(int week) {
     if (week < 1 || week > seasonWeeks || week == _week) return;
-    if (bySwipe && !swipeCanLeave(_week, _picks)) {
-      _showBlocked();
-      return;
-    }
     setState(() => _week = week);
   }
 
-  void _showBlocked() {
-    final message = blockedLeaveMessage(_week);
+  void _showMessage(String message) {
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  void _showSelectBlocked() {
+    final message = selectBlockedMessage(_week, _picks);
+    if (message == null) return;
+    _showMessage(message);
   }
 
   Future<void> _pick(String code) async {
@@ -91,33 +97,17 @@ class _SheetScreenState extends State<SheetScreen> {
     await _save(next);
   }
 
-  Future<void> _clear() async {
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          title: const Text('Clear the season?'),
-          content: const Text('This wipes every pick and returns to Week 1.'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel'),
-            ),
-            TextButton(
-              key: const Key('confirm-clear'),
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Clear'),
-            ),
-          ],
-        );
-      },
-    );
-    if (confirmed != true || !mounted) return;
-    setState(() {
-      _picks = {};
-      _week = 1;
-    });
-    await _save({});
+  Future<void> _clearWeek() async {
+    final next = picksAfterClearingWeek(_picks, _week);
+    setState(() => _picks = next);
+    await _save(next);
+  }
+
+  Future<void> _toggleFavorite(String code) async {
+    final next = Set<String>.of(_favorites);
+    if (!next.add(code)) next.remove(code);
+    setState(() => _favorites = next);
+    await widget.favorites.save(next);
   }
 
   Future<void> _openWeekMenu() async {
@@ -158,7 +148,7 @@ class _SheetScreenState extends State<SheetScreen> {
       ],
     );
     if (!mounted || selected == null) return;
-    _goTo(selected, bySwipe: false);
+    _goTo(selected);
   }
 
   @override
@@ -172,7 +162,11 @@ class _SheetScreenState extends State<SheetScreen> {
 
     final instruction = weekInstruction(_week, _picks);
     final stillOpen = stillOpenLine(_picks);
-    final games = visibleGames(_week, _picks);
+    final games = orderedGames(
+      visibleGames(_week, _picks),
+      pick: _picks[_week],
+      favorites: _favorites,
+    );
     final hidden = everyRemainingGameHidden(_week, _picks);
     final footer = showUsedFooter(_week, _picks);
 
@@ -190,24 +184,7 @@ class _SheetScreenState extends State<SheetScreen> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Row(
-                  children: [
-                    Text('SURVIVOR', style: labelStyle(size: 12)),
-                    const Spacer(),
-                    Listener(
-                      onPointerDown: (event) => _markControl(event.pointer),
-                      child: TextButton(
-                        key: const Key('clear-picks'),
-                        onPressed: _clear,
-                        style: TextButton.styleFrom(
-                          foregroundColor: AppColors.muted,
-                          minimumSize: const Size(44, 44),
-                        ),
-                        child: const Text('Clear'),
-                      ),
-                    ),
-                  ],
-                ),
+                Text('SURVIVOR', style: labelStyle(size: 12)),
                 const SizedBox(height: 4),
                 Row(
                   children: [
@@ -216,7 +193,7 @@ class _SheetScreenState extends State<SheetScreen> {
                       icon: Icons.chevron_left,
                       enabled: _week > 1,
                       onPointerDown: _markControl,
-                      onPressed: () => _goTo(_week - 1, bySwipe: true),
+                      onPressed: () => _goTo(_week - 1),
                     ),
                     Expanded(
                       child: Listener(
@@ -266,7 +243,7 @@ class _SheetScreenState extends State<SheetScreen> {
                       icon: Icons.chevron_right,
                       enabled: _week < seasonWeeks,
                       onPointerDown: _markControl,
-                      onPressed: () => _goTo(_week + 1, bySwipe: true),
+                      onPressed: () => _goTo(_week + 1),
                     ),
                   ],
                 ),
@@ -312,21 +289,30 @@ class _SheetScreenState extends State<SheetScreen> {
                             color: AppColors.text,
                           ),
                         )
-                      : ListView.separated(
-                          key: const Key('matchup-list'),
-                          padding: const EdgeInsets.only(bottom: 12),
-                          itemCount: games.length,
-                          separatorBuilder: (context, index) =>
-                              const SizedBox(height: 10),
-                          itemBuilder: (context, index) {
-                            final game = games[index];
-                            return MatchupCard(
-                              game: game,
-                              picks: _picks,
-                              onPick: _pick,
-                              onControlPointerDown: _markControl,
-                            );
-                          },
+                      : KeyedSubtree(
+                          key: ValueKey(
+                            '$_week|${_picks[_week]}|${(_favorites.toList()..sort()).join(',')}',
+                          ),
+                          child: ListView.separated(
+                            key: const Key('matchup-list'),
+                            padding: const EdgeInsets.only(bottom: 12),
+                            itemCount: games.length,
+                            separatorBuilder: (context, index) =>
+                                const SizedBox(height: 10),
+                            itemBuilder: (context, index) {
+                              final game = games[index];
+                              return MatchupCard(
+                                game: game,
+                                picks: _picks,
+                                favorites: _favorites,
+                                onPick: _pick,
+                                onClearPick: _clearWeek,
+                                onBlockedTap: _showSelectBlocked,
+                                onToggleFavorite: _toggleFavorite,
+                                onControlPointerDown: _markControl,
+                              );
+                            },
+                          ),
                         ),
                 ),
                 if (footer)

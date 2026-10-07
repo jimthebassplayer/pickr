@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'persistence/favorite_store.dart';
 import 'persistence/pick_store.dart';
 import 'screens/sheet_screen.dart';
 import 'theme/app_theme.dart';
@@ -20,9 +21,10 @@ Future<void> main() async {
 }
 
 class PickrApp extends StatelessWidget {
-  const PickrApp({super.key, this.store});
+  const PickrApp({super.key, this.store, this.favorites});
 
   final PickStore? store;
+  final FavoriteStore? favorites;
 
   @override
   Widget build(BuildContext context) {
@@ -30,7 +32,10 @@ class PickrApp extends StatelessWidget {
       title: 'Pickr',
       debugShowCheckedModeBanner: false,
       theme: buildAppTheme(),
-      home: SheetScreen(store: store ?? SharedPreferencesPickStore()),
+      home: SheetScreen(
+        store: store ?? SharedPreferencesPickStore(),
+        favorites: favorites ?? SharedPreferencesFavoriteStore(),
+      ),
     );
   }
 }

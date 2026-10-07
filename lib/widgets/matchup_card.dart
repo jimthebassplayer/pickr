@@ -10,13 +10,21 @@ class MatchupCard extends StatelessWidget {
     super.key,
     required this.game,
     required this.picks,
+    required this.favorites,
     required this.onPick,
+    required this.onClearPick,
+    required this.onBlockedTap,
+    required this.onToggleFavorite,
     required this.onControlPointerDown,
   });
 
   final Game game;
   final Map<int, String> picks;
+  final Set<String> favorites;
   final ValueChanged<String> onPick;
+  final VoidCallback onClearPick;
+  final VoidCallback onBlockedTap;
+  final ValueChanged<String> onToggleFavorite;
   final ValueChanged<int> onControlPointerDown;
 
   @override
@@ -47,8 +55,12 @@ class MatchupCard extends StatelessWidget {
                     game: game,
                     snapshot: away,
                     picks: picks,
+                    favorites: favorites,
                     alignEnd: false,
                     onPick: onPick,
+                    onClearPick: onClearPick,
+                    onBlockedTap: onBlockedTap,
+                    onToggleFavorite: onToggleFavorite,
                     onControlPointerDown: onControlPointerDown,
                   ),
                 ),
@@ -57,9 +69,16 @@ class MatchupCard extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Text(
-                        formatSpread(game.spread),
-                        style: displayStyle(size: 22, color: AppColors.accent),
+                      SizedBox(
+                        width: 52,
+                        child: Text(
+                          formatSpread(game.spread),
+                          textAlign: TextAlign.right,
+                          style: displayStyle(
+                            size: 22,
+                            color: AppColors.accent,
+                          ),
+                        ),
                       ),
                       const SizedBox(width: 6),
                       const Text(
@@ -79,8 +98,12 @@ class MatchupCard extends StatelessWidget {
                     game: game,
                     snapshot: home,
                     picks: picks,
+                    favorites: favorites,
                     alignEnd: true,
                     onPick: onPick,
+                    onClearPick: onClearPick,
+                    onBlockedTap: onBlockedTap,
+                    onToggleFavorite: onToggleFavorite,
                     onControlPointerDown: onControlPointerDown,
                   ),
                 ),
@@ -103,8 +126,12 @@ class _TeamSide extends StatelessWidget {
     required this.game,
     required this.snapshot,
     required this.picks,
+    required this.favorites,
     required this.alignEnd,
     required this.onPick,
+    required this.onClearPick,
+    required this.onBlockedTap,
+    required this.onToggleFavorite,
     required this.onControlPointerDown,
   });
 
@@ -112,24 +139,30 @@ class _TeamSide extends StatelessWidget {
   final Game game;
   final TeamSnapshot snapshot;
   final Map<int, String> picks;
+  final Set<String> favorites;
   final bool alignEnd;
   final ValueChanged<String> onPick;
+  final VoidCallback onClearPick;
+  final VoidCallback onBlockedTap;
+  final ValueChanged<String> onToggleFavorite;
   final ValueChanged<int> onControlPointerDown;
 
   @override
   Widget build(BuildContext context) {
     return Column(
-      crossAxisAlignment: alignEnd
-          ? CrossAxisAlignment.end
-          : CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _TeamTile(
           code: code,
           game: game,
           snapshot: snapshot,
           picks: picks,
+          favorite: favorites.contains(code),
           alignEnd: alignEnd,
           onPick: onPick,
+          onClearPick: onClearPick,
+          onBlockedTap: onBlockedTap,
+          onToggleFavorite: onToggleFavorite,
           onControlPointerDown: onControlPointerDown,
         ),
         for (final line in snapshot.recent)
@@ -151,8 +184,12 @@ class _TeamTile extends StatelessWidget {
     required this.game,
     required this.snapshot,
     required this.picks,
+    required this.favorite,
     required this.alignEnd,
     required this.onPick,
+    required this.onClearPick,
+    required this.onBlockedTap,
+    required this.onToggleFavorite,
     required this.onControlPointerDown,
   });
 
@@ -160,82 +197,118 @@ class _TeamTile extends StatelessWidget {
   final Game game;
   final TeamSnapshot snapshot;
   final Map<int, String> picks;
+  final bool favorite;
   final bool alignEnd;
   final ValueChanged<String> onPick;
+  final VoidCallback onClearPick;
+  final VoidCallback onBlockedTap;
+  final ValueChanged<String> onToggleFavorite;
   final ValueChanged<int> onControlPointerDown;
+
+  /// A second tap on the selected team clears only this week. A tap that
+  /// cannot be saved explains why. A used team on an open week stays quiet.
+  VoidCallback? get _onTap {
+    if (canClearPick(game, code, picks)) return onClearPick;
+    if (canPickTeam(game, code, picks)) return () => onPick(code);
+    if (selectBlockedMessage(game.week, picks) != null) return onBlockedTap;
+    return null;
+  }
 
   @override
   Widget build(BuildContext context) {
     final selected = picks[game.week] == code;
     final used = teamIsUsed(code, game.week, picks);
-    final tappable = canPickTeam(game, code, picks);
     final won = selected ? pickWon(game, code) : null;
     final foreground = selected ? AppColors.onAccent : AppColors.text;
     final secondary = selected
         ? AppColors.onAccent.withValues(alpha: 0.72)
         : AppColors.muted;
 
+    final starColor = favorite
+        ? AppColors.star
+        : (selected ? AppColors.onAccent : AppColors.muted);
+
     return Listener(
       onPointerDown: (event) => onControlPointerDown(event.pointer),
-      child: Material(
-        color: selected ? AppColors.accent : AppColors.team,
-        borderRadius: BorderRadius.circular(10),
-        child: InkWell(
-          key: Key('team-$code'),
-          onTap: tappable ? () => onPick(code) : null,
-          borderRadius: BorderRadius.circular(10),
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(minHeight: 48),
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              child: Column(
-                crossAxisAlignment: alignEnd
-                    ? CrossAxisAlignment.end
-                    : CrossAxisAlignment.start,
-                children: [
-                  Row(
+      child: Stack(
+        children: [
+          Material(
+            color: selected ? AppColors.accent : AppColors.team,
+            borderRadius: BorderRadius.circular(10),
+            child: InkWell(
+              key: Key('team-$code'),
+              onTap: _onTap,
+              borderRadius: BorderRadius.circular(10),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 48),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 8, 36, 8),
+                  child: Column(
+                    crossAxisAlignment: alignEnd
+                        ? CrossAxisAlignment.end
+                        : CrossAxisAlignment.start,
                     children: [
-                      if (alignEnd && won != null) _ResultMark(won: won),
-                      Expanded(
-                        child: Text.rich(
-                          TextSpan(
-                            text: nicknameOf(code),
-                            style: displayStyle(size: 18, color: foreground),
-                            children: [
+                      Row(
+                        children: [
+                          if (alignEnd && won != null) _ResultMark(won: won),
+                          Expanded(
+                            child: Text.rich(
                               TextSpan(
-                                text: ' ${snapshot.record}',
-                                style: TextStyle(
-                                  fontFamily: kBodyFont,
-                                  fontSize: 13,
-                                  fontWeight: FontWeight.w600,
-                                  color: secondary,
+                                text: nicknameOf(code),
+                                style: displayStyle(
+                                  size: 18,
+                                  color: foreground,
                                 ),
+                                children: [
+                                  TextSpan(
+                                    text: ' ${snapshot.record}',
+                                    style: TextStyle(
+                                      fontFamily: kBodyFont,
+                                      fontSize: 13,
+                                      fontWeight: FontWeight.w600,
+                                      color: secondary,
+                                    ),
+                                  ),
+                                ],
                               ),
-                            ],
+                              textAlign: alignEnd
+                                  ? TextAlign.right
+                                  : TextAlign.left,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
                           ),
-                          textAlign: alignEnd
-                              ? TextAlign.right
-                              : TextAlign.left,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                          if (!alignEnd && won != null) _ResultMark(won: won),
+                        ],
                       ),
-                      if (!alignEnd && won != null) _ResultMark(won: won),
+                      if (used)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            'USED',
+                            style: labelStyle(size: 10, color: secondary),
+                          ),
+                        ),
                     ],
                   ),
-                  if (used)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 4),
-                      child: Text(
-                        'USED',
-                        style: labelStyle(size: 10, color: secondary),
-                      ),
-                    ),
-                ],
+                ),
               ),
             ),
           ),
-        ),
+          Positioned(
+            top: 0,
+            right: 0,
+            child: IconButton(
+              key: Key('favorite-$code'),
+              onPressed: () => onToggleFavorite(code),
+              icon: Icon(favorite ? Icons.star : Icons.star_border),
+              color: starColor,
+              iconSize: 18,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 44, height: 44),
+            ),
+          ),
+        ],
       ),
     );
   }
